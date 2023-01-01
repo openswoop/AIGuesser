@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 import aiohttp
-
+import openai
 # referencing https://github.com/Kilvoctu/aiyabot
 
 ## setup
@@ -15,7 +15,7 @@ import aiohttp
 load_dotenv()
 intents = discord.Intents.all()
 client = commands.Bot(intents=intents, command_prefix='$')
-
+openai.api_key = os.getenv('OPENAI')
 SD_URL: str = 'http://localhost:7860'
 
 
@@ -25,16 +25,30 @@ class Game:
 		# keys are mentions
 		self.player_prompts: dict[str, str] = {}
 		self.player_images_b64: dict[str, str] = {}
+		self.currentIndex: int = 0
 		
 		self.show_on_finish = False
 	
 	async def show_all_images(self):
 		await self.channel.send('Showing all images')
-		for player, image_base64 in self.player_images_b64.items():
+		for player, image_url in self.player_images_b64.items():
 			member = next((v for v in self.channel.members if v.mention == player), None)
 			prompt = self.player_prompts[player]
-			file = discord.File(io.BytesIO(base64.b64decode(image_base64)), filename='image.jpg')
-			await self.channel.send(f'{member.display_name}: {prompt}', file=file)
+			embed=discord.Embed(title="", url=image_url, description="", color=0x1CEEEE)
+			embed.set_thumbnail(url=image_url)
+			await self.channel.send(f'{member.display_name}: {prompt}', embed=embed)
+
+	async def show_next_image(self):
+		await self.channel.send('Showing next image')
+		image_url = self.player_images_b64[list(self.player_images_b64.keys())[self.currentIndex]]
+
+		player = list(self.player_images_b64.keys())[self.currentIndex]
+		self.currentIndex += 1
+		prompt = self.player_prompts[player]
+		embed=discord.Embed(title="", url=image_url, description="", color=0x1CEEEE)
+		embed.set_thumbnail(url=image_url)
+		guessName = "Guess who created this"
+		await self.channel.send(f'{guessName}', embed=embed)
 
 # game code -> game
 current_games: dict[str, Game] = {}
@@ -53,16 +67,14 @@ def generate_code() -> str:
 
 async def generate_image(prompt: str) -> str:
 	print(f'Generating "{prompt}"')
-	payload = {
-		'prompt': prompt,
-		'steps': 10
-	}
+	response = openai.Image.create(
+    prompt=prompt,
+    n=1,
+    size="1024x1024"
+    )
+	image_url = response['data'][0]['url']
 
-	async with aiohttp.ClientSession() as session:
-		async with session.post(url=f'{SD_URL}/sdapi/v1/txt2img', json=payload) as response:
-			response_data = await response.json()
-			print(f'Finished generating "{prompt}"')
-			return response_data['images'][0]
+	return image_url
 
 
 ## events and commands
@@ -135,7 +147,7 @@ async def newgame(ctx):
 		+ f'{code} [prompt]')
 
 @client.command()
-async def show(ctx):
+async def showall(ctx):
 	code: str = channel_to_code.get(ctx.channel.id)
 	game: Game = current_games.get(code)
 	if game is None:
@@ -149,8 +161,22 @@ async def show(ctx):
 	
 	await game.show_all_images()
 
+@client.command()
+async def show(ctx):
+	code: str = channel_to_code.get(ctx.channel.id)
+	game: Game = current_games.get(code)
+	if game is None:
+		await ctx.send('Start a new game with "$newgame" first')
+		return
+	
+	if game.player_prompts.keys() != game.player_images_b64.keys():
+		await ctx.send('Still generating images...')
+		game.show_on_finish = True
+		return
+	
+	await game.show_next_image()
 
 ## run bot
 
-TOKEN: str = os.getenv('AIGUESSER_TOKEN')
+TOKEN: str = os.getenv('DISCORD_TOKEN')
 client.run(TOKEN)
